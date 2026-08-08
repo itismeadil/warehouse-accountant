@@ -65,10 +65,10 @@ exports.getPurchaseInvoices = async (req, res) => {
 };
 
 // POST /api/accountant/sales-invoices
-// Body: { invoiceNumber, customerName?, date?, notes?, lines: [{itemId, itemName, quantity, unitPrice}] }
+// Body: { invoiceNumber, customerName?, date?, notes?, vatRate?, subtotal?, vatAmount?, totalAmount?, lines: [{itemId, itemName, quantity, unitPrice}] }
 exports.createSalesInvoice = async (req, res) => {
   try {
-    const { invoiceNumber, customerName, date, notes, lines } = req.body;
+    const { invoiceNumber, customerName, date, notes, vatRate, subtotal, vatAmount, totalAmount, lines } = req.body;
 
     if (!invoiceNumber || !lines?.length) {
       return res.status(400).json({
@@ -92,8 +92,11 @@ exports.createSalesInvoice = async (req, res) => {
       customerName,
       date,
       notes,
+      vatRate,
+      subtotal,
+      vatAmount,
+      totalAmount: totalAmount || sumTotal(pricedLines),
       lines: pricedLines,
-      totalAmount: sumTotal(pricedLines),
     });
 
     res.status(201).json(invoice);
