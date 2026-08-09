@@ -22,7 +22,7 @@ async function adjustItemCounters(itemId, deltas) {
   const updated = await Item.findByIdAndUpdate(
     itemId,
     { $inc: inc },
-    { new: true },
+    { returnDocument: 'after' },
   ).lean();
 
   if (!updated) {

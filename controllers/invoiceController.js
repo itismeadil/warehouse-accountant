@@ -1,8 +1,44 @@
 const { getPurchaseInvoiceModel } = require("../models/PurchaseInvoice");
 const { getSalesInvoiceModel } = require("../models/SalesInvoice");
 const { adjustItemCounters } = require("../models/warehouse/stockOps");
+const { getItemModel } = require("../models/warehouse/Item");
 
 const round2 = (n) => Math.round(n * 100) / 100;
+
+// Validates that requested quantities don't exceed available stock
+const validateStockAvailability = async (lines) => {
+  const Item = getItemModel();
+  const validationErrors = [];
+
+  for (const line of lines) {
+    const item = await Item.findById(line.itemId).lean();
+    
+    if (!item) {
+      validationErrors.push({
+        itemId: line.itemId,
+        itemName: line.itemName || 'Unknown Item',
+        requested: line.quantity,
+        available: 0,
+        message: `Item not found`
+      });
+      continue;
+    }
+
+    // Check against raw stock value
+    const availableStock = item.stock || 0;
+    if (line.quantity > availableStock) {
+      validationErrors.push({
+        itemId: line.itemId,
+        itemName: line.itemName || item.name || 'Unknown Item',
+        requested: line.quantity,
+        available: availableStock,
+        message: `Requested quantity (${line.quantity}) exceeds available stock (${availableStock})`
+      });
+    }
+  }
+
+  return validationErrors;
+};
 
 // Fills in lineTotal (qty * price) and the invoice totalAmount from the
 // raw lines the client sent, so the client never has to get the math
@@ -64,15 +100,43 @@ exports.getPurchaseInvoices = async (req, res) => {
   }
 };
 
+// Generate auto-incrementing invoice number based on date
+const generateInvoiceNumber = async (Model, prefix = "INV") => {
+  const today = new Date();
+  const dateStr = today.toISOString().slice(0, 10).replace(/-/g, ""); // YYYYMMDD
+  
+  // Find the last invoice for today
+  const lastInvoice = await Model.findOne({
+    invoiceNumber: new RegExp(`^${prefix}-${dateStr}-`),
+  }).sort({ invoiceNumber: -1 });
+
+  let sequence = 1;
+  if (lastInvoice) {
+    const lastSequence = parseInt(lastInvoice.invoiceNumber.split("-").pop());
+    sequence = lastSequence + 1;
+  }
+
+  return `${prefix}-${dateStr}-${String(sequence).padStart(4, "0")}`;
+};
+
 // POST /api/accountant/sales-invoices
-// Body: { invoiceNumber, customerName?, date?, notes?, vatRate?, subtotal?, vatAmount?, totalAmount?, lines: [{itemId, itemName, quantity, unitPrice}] }
+// Body: { invoiceNumber?, customerName?, date?, notes?, vatRate?, subtotal?, vatAmount?, totalAmount?, lines: [{itemId, itemName, quantity, unitPrice}] }
 exports.createSalesInvoice = async (req, res) => {
   try {
     const { invoiceNumber, customerName, date, notes, vatRate, subtotal, vatAmount, totalAmount, lines } = req.body;
 
-    if (!invoiceNumber || !lines?.length) {
+    if (!lines?.length) {
       return res.status(400).json({
-        message: "invoiceNumber and at least one line are required",
+        message: "At least one line is required",
+      });
+    }
+
+    // Validate stock availability before processing
+    const stockValidationErrors = await validateStockAvailability(lines);
+    if (stockValidationErrors.length > 0) {
+      return res.status(400).json({
+        message: "Insufficient stock for one or more items",
+        stockErrors: stockValidationErrors
       });
     }
 
@@ -87,8 +151,11 @@ exports.createSalesInvoice = async (req, res) => {
     }
 
     const SalesInvoice = getSalesInvoiceModel();
+    // Auto-generate invoice number if not provided
+    const finalInvoiceNumber = invoiceNumber?.trim() || await generateInvoiceNumber(SalesInvoice, "INV");
+
     const invoice = await SalesInvoice.create({
-      invoiceNumber,
+      invoiceNumber: finalInvoiceNumber,
       customerName,
       date,
       notes,
