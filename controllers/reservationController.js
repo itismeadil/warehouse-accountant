@@ -81,6 +81,7 @@ exports.cancelReservation = async (req, res) => {
 // same quantity/price and updates the stock counters.
 exports.fulfillReservation = async (req, res) => {
   try {
+    const { vatRate, subtotal, vatAmount, totalAmount } = req.body;
     const Reservation = getReservationModel();
     const reservation = await Reservation.findById(req.params.id);
 
@@ -105,7 +106,7 @@ exports.fulfillReservation = async (req, res) => {
     const unitPrice = reservation.unitPrice || 0;
     const lineTotal = round2(reservation.quantity * unitPrice);
 
-    const invoice = await SalesInvoice.create({
+    const invoiceData = {
       invoiceNumber,
       customerName: reservation.customerName || "Walk-in customer",
       date: new Date(),
@@ -120,7 +121,17 @@ exports.fulfillReservation = async (req, res) => {
       ],
       totalAmount: lineTotal,
       notes: `Created from reservation ${reservation._id}`,
-    });
+    };
+
+    // Add VAT fields if provided
+    if (vatRate !== undefined) {
+      invoiceData.vatRate = vatRate;
+      invoiceData.subtotal = subtotal !== undefined ? subtotal : lineTotal;
+      invoiceData.vatAmount = vatAmount !== undefined ? vatAmount : 0;
+      invoiceData.totalAmount = totalAmount !== undefined ? totalAmount : lineTotal;
+    }
+
+    const invoice = await SalesInvoice.create(invoiceData);
 
     reservation.status = "fulfilled";
     reservation.resolvedAt = new Date();
