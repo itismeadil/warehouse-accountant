@@ -12,14 +12,14 @@ const validateStockAvailability = async (lines) => {
 
   for (const line of lines) {
     const item = await Item.findById(line.itemId).lean();
-    
+
     if (!item) {
       validationErrors.push({
         itemId: line.itemId,
-        itemName: line.itemName || 'Unknown Item',
+        itemName: line.itemName || "Unknown Item",
         requested: line.quantity,
         available: 0,
-        message: `Item not found`
+        message: `Item not found`,
       });
       continue;
     }
@@ -29,10 +29,10 @@ const validateStockAvailability = async (lines) => {
     if (line.quantity > availableStock) {
       validationErrors.push({
         itemId: line.itemId,
-        itemName: line.itemName || item.name || 'Unknown Item',
+        itemName: line.itemName || item.name || "Unknown Item",
         requested: line.quantity,
         available: availableStock,
-        message: `Requested quantity (${line.quantity}) exceeds available stock (${availableStock})`
+        message: `Requested quantity (${line.quantity}) exceeds available stock (${availableStock})`,
       });
     }
   }
@@ -59,7 +59,8 @@ exports.createPurchaseInvoice = async (req, res) => {
 
     if (!invoiceNumber || !supplierName || !lines?.length) {
       return res.status(400).json({
-        message: "invoiceNumber, supplierName, and at least one line are required",
+        message:
+          "invoiceNumber, supplierName, and at least one line are required",
       });
     }
 
@@ -104,7 +105,7 @@ exports.getPurchaseInvoices = async (req, res) => {
 const generateInvoiceNumber = async (Model, prefix = "INV") => {
   const today = new Date();
   const dateStr = today.toISOString().slice(0, 10).replace(/-/g, ""); // YYYYMMDD
-  
+
   // Find the last invoice for today
   const lastInvoice = await Model.findOne({
     invoiceNumber: new RegExp(`^${prefix}-${dateStr}-`),
@@ -123,7 +124,17 @@ const generateInvoiceNumber = async (Model, prefix = "INV") => {
 // Body: { invoiceNumber?, customerName?, date?, notes?, vatRate?, subtotal?, vatAmount?, totalAmount?, lines: [{itemId, itemName, quantity, unitPrice}] }
 exports.createSalesInvoice = async (req, res) => {
   try {
-    const { invoiceNumber, customerName, date, notes, vatRate, subtotal, vatAmount, totalAmount, lines } = req.body;
+    const {
+      invoiceNumber,
+      customerName,
+      date,
+      notes,
+      vatRate,
+      subtotal,
+      vatAmount,
+      totalAmount,
+      lines,
+    } = req.body;
 
     if (!lines?.length) {
       return res.status(400).json({
@@ -136,7 +147,7 @@ exports.createSalesInvoice = async (req, res) => {
     if (stockValidationErrors.length > 0) {
       return res.status(400).json({
         message: "Insufficient stock for one or more items",
-        stockErrors: stockValidationErrors
+        stockErrors: stockValidationErrors,
       });
     }
 
@@ -152,7 +163,9 @@ exports.createSalesInvoice = async (req, res) => {
 
     const SalesInvoice = getSalesInvoiceModel();
     // Auto-generate invoice number if not provided
-    const finalInvoiceNumber = invoiceNumber?.trim() || await generateInvoiceNumber(SalesInvoice, "INV");
+    const finalInvoiceNumber =
+      invoiceNumber?.trim() ||
+      (await generateInvoiceNumber(SalesInvoice, "INV"));
 
     const invoice = await SalesInvoice.create({
       invoiceNumber: finalInvoiceNumber,
@@ -180,6 +193,113 @@ exports.getSalesInvoices = async (req, res) => {
     const invoices = await SalesInvoice.find().sort({ createdAt: -1 }).lean();
     res.json(invoices);
   } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// GET /api/accountant/sales-invoices/aggregate
+// Query: { type: 'daily'|'weekly'|'monthly', date?, startDate?, month? }
+exports.getSalesInvoiceAggregate = async (req, res) => {
+  try {
+    const { type, date, startDate, month } = req.query;
+    const SalesInvoice = getSalesInvoiceModel();
+
+    let startDateFilter, endDateFilter;
+    const now = new Date();
+
+    if (type === "daily" && date) {
+      const filterDate = new Date(date);
+      startDateFilter = new Date(filterDate.setHours(0, 0, 0, 0));
+      endDateFilter = new Date(filterDate.setHours(23, 59, 59, 999));
+    } else if (type === "weekly" && startDate) {
+      startDateFilter = new Date(startDate);
+      startDateFilter.setHours(0, 0, 0, 0);
+      endDateFilter = new Date(startDateFilter);
+      endDateFilter.setDate(endDateFilter.getDate() + 6);
+      endDateFilter.setHours(23, 59, 59, 999);
+    } else if (type === "monthly" && month) {
+      const [year, monthNum] = month.split("-").map(Number);
+      startDateFilter = new Date(year, monthNum - 1, 1);
+      endDateFilter = new Date(year, monthNum, 0, 23, 59, 59, 999);
+    } else {
+      return res
+        .status(400)
+        .json({ message: "Invalid aggregation parameters" });
+    }
+
+    const invoices = await SalesInvoice.find({
+      date: { $gte: startDateFilter, $lte: endDateFilter },
+    })
+      .sort({ date: 1 })
+      .lean();
+
+    let result = { invoices, total: 0, subtotal: 0, vatAmount: 0 };
+
+    if (type === "monthly") {
+      // Break down by weeks
+      const weeks = [];
+      let currentWeekStart = new Date(startDateFilter);
+      let weekIndex = 0;
+
+      while (currentWeekStart <= endDateFilter) {
+        const weekEnd = new Date(currentWeekStart);
+        weekEnd.setDate(
+          Math.min(weekEnd.getDate() + 6, endDateFilter.getDate()),
+        );
+        weekEnd.setHours(23, 59, 59, 999);
+
+        const weekInvoices = invoices.filter((inv) => {
+          const invDate = new Date(inv.date || inv.createdAt);
+          return invDate >= currentWeekStart && invDate <= weekEnd;
+        });
+
+        const weekTotal = weekInvoices.reduce(
+          (sum, inv) => sum + (inv.totalAmount || 0),
+          0,
+        );
+        const weekSubtotal = weekInvoices.reduce(
+          (sum, inv) => sum + (inv.subtotal || inv.totalAmount || 0),
+          0,
+        );
+        const weekVat = weekInvoices.reduce(
+          (sum, inv) => sum + (inv.vatAmount || 0),
+          0,
+        );
+
+        weeks.push({
+          weekNumber: weekIndex + 1,
+          startDate: new Date(currentWeekStart),
+          endDate: new Date(weekEnd),
+          invoices: weekInvoices,
+          total: round2(weekTotal),
+          subtotal: round2(weekSubtotal),
+          vatAmount: round2(weekVat),
+        });
+
+        currentWeekStart = new Date(weekEnd);
+        currentWeekStart.setDate(currentWeekStart.getDate() + 1);
+        weekIndex++;
+      }
+
+      result.weeks = weeks;
+    }
+
+    result.total = round2(
+      invoices.reduce((sum, inv) => sum + (inv.totalAmount || 0), 0),
+    );
+    result.subtotal = round2(
+      invoices.reduce(
+        (sum, inv) => sum + (inv.subtotal || inv.totalAmount || 0),
+        0,
+      ),
+    );
+    result.vatAmount = round2(
+      invoices.reduce((sum, inv) => sum + (inv.vatAmount || 0), 0),
+    );
+
+    res.json(result);
+  } catch (error) {
+    console.error(error);
     res.status(500).json({ message: error.message });
   }
 };
