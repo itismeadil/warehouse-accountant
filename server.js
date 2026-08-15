@@ -16,7 +16,7 @@ async function start() {
   // read/write the accountant's own database. Order doesn't matter, but
   // both must be up before any request is handled.
   await connectWarehouseDB();
-  await connectAccountantDB();
+  const accountantConnection = await connectAccountantDB();
 
   const app = express();
 
@@ -27,9 +27,16 @@ async function start() {
   );
   app.use(express.json());
 
+  // Middleware to attach accountant connection to all requests
+  app.use((req, res, next) => {
+    req.accountantConn = accountantConnection;
+    next();
+  });
+
   app.use("/api/accountant", requireApiKey, accountantRoutes);
   app.use("/api/accountant", requireApiKey, invoiceRoutes);
   app.use("/api/accountant", requireApiKey, reservationRoutes);
+  app.use("/api/accountant/expenses", require("./routes/expenses"));
 
   app.get("/", (req, res) => {
     res.send("Accountant service running");
